@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+todo.txt
+PyWhatKit_DB.txt

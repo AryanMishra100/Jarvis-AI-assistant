@@ -1,0 +1,10 @@
+pyttsx3
+SpeechRecognition
+PyAudio
+pyautogui
+wikipedia
+plyer
+pywhatkit
+pyjokes
+python-dotenv
+groq

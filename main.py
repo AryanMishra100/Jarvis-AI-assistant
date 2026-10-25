@@ -1,210 +1,241 @@
-import pyttsx3
-import speech_recognition as sr
-import random
+"""JARVIS - a voice assistant built with Python.
+
+Speech in -> command routing / LLM (Groq) -> speech out.
+Secrets are read from a .env file (see .env.example), never hardcoded.
+"""
 import datetime
-import pyautogui
-import wikipedia
-import webbrowser
-from plyer import notification
-import pywhatkit as pwk
-import smtplib
-import pyjokes
 import os
+import random
+import re
+import smtplib
+import webbrowser
+
+import pyautogui
+import pyjokes
+import pyttsx3
+import pywhatkit as pwk
+import speech_recognition as sr
+import wikipedia
 from dotenv import load_dotenv
 from groq import Groq
+from plyer import notification
 
 load_dotenv()
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-if not groq_api_key:
-    raise ValueError("GROQ_API_KEY not found. Make sure it's in your .env file.")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY not found. Add it to your .env file (see .env.example).")
 
-client = Groq(api_key=groq_api_key)
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+EMAIL_DEFAULT_RECIPIENT = os.getenv("EMAIL_DEFAULT_RECIPIENT")
+WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER")  # format: +91XXXXXXXXXX
 
+TODO_FILE = "todo.txt"
+EXIT_PATTERN = re.compile(r"\b(bye|goodbye|exit|quit|go away|take rest)\b")
+
+client = Groq(api_key=GROQ_API_KEY)
 conversation_history = [
-    {"role": "system", "content": "You are JARVIS, a helpful voice assistant. Keep answers concise and conversational since they will be spoken aloud."}
+    {
+        "role": "system",
+        "content": "You are JARVIS, a helpful voice assistant. "
+        "Keep answers concise and conversational since they will be spoken aloud.",
+    }
 ]
 
-engine = pyttsx3.init('sapi5')
-voices = engine.getProperty('voices')
-engine.setProperty('voice', voices[0].id)
+engine = pyttsx3.init()  # picks the right speech driver for the OS
+voices = engine.getProperty("voices")
+if voices:
+    engine.setProperty("voice", voices[0].id)
 
 
-def speak(audio):
-    engine.say(audio)
+def speak(text):
+    print(f"JARVIS: {text}")
+    engine.say(text)
     engine.runAndWait()
 
 
-def wishMe():
-    hour = int(datetime.datetime.now().hour)
-    if hour>=0 and hour<12:
+def wish_me():
+    hour = datetime.datetime.now().hour
+    if hour < 12:
         speak("Good Morning!")
-
-    elif hour>=12 and hour<18:
+    elif hour < 18:
         speak("Good Afternoon!")
-
     else:
         speak("Good Evening!")
-
     speak("I am JARVIS. Please tell me how may I help you")
 
-def takeCommand():
 
-    r = sr.Recognizer()
+def take_command():
+    recognizer = sr.Recognizer()
     with sr.Microphone() as source:
         print("Listening...")
-        r.pause_threshold = 1
-        audio = r.listen(source)
-
+        recognizer.pause_threshold = 1
+        audio = recognizer.listen(source)
     try:
         print("Recognizing...")
-        query = r.recognize_google(audio, language='en-in')
+        query = recognizer.recognize_google(audio, language="en-in")
         print(f"User said: {query}\n")
-
-
+        return query.lower()
     except sr.UnknownValueError:
-
         speak("Sorry, I didn't catch that.")
-
-        return ""
-
-
     except sr.RequestError:
-
         speak("Speech service is unavailable.")
+    return ""
 
-        return ""
-    return query
-
-def sendEmail(to, content):
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.ehlo()
-    server.starttls()
-    server.login('user@gmail.com', 'password')
-    server.sendmail('user@gmail.com', to, content)
-    server.close()
 
 def ask_groq(question):
-    global conversation_history
+    """Send the question to the LLM, keeping multi-turn conversation memory."""
+    conversation_history.append({"role": "user", "content": question})
     try:
-        conversation_history.append({"role": "user", "content": question})
-
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=conversation_history,
             temperature=0.7,
             max_tokens=512,
         )
-
         reply = response.choices[0].message.content
         conversation_history.append({"role": "assistant", "content": reply})
         return reply
-
     except Exception as e:
-        print(e)
+        print(f"Groq error: {e}")
+        conversation_history.pop()  # don't keep a question that got no answer
         return "Sorry, I had trouble answering that."
 
+
+def send_email(to, content):
+    if not (EMAIL_ADDRESS and EMAIL_APP_PASSWORD):
+        raise RuntimeError("Email credentials missing in .env")
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, to, content)
+
+
+def search_wikipedia(query):
+    topic = query.replace("search wikipedia", "").strip()
+    if not topic:
+        speak("What should I search for?")
+        return
+    speak("Searching Wikipedia...")
+    try:
+        result = wikipedia.summary(topic, sentences=2)
+        speak("According to Wikipedia")
+        speak(result)
+    except wikipedia.exceptions.DisambiguationError:
+        speak("That topic is ambiguous. Please be more specific.")
+    except wikipedia.exceptions.PageError:
+        speak("I couldn't find a page for that.")
+
+
+def play_music():
+    speak("Playing music")
+    tracks = [
+        "https://www.youtube.com/watch?v=yJg-Y5byMMw",
+        "https://www.youtube.com/watch?v=TW9d8vYrVFQ",
+        "https://www.youtube.com/watch?v=U6cPjurCOmQ",
+    ]
+    webbrowser.open(random.choice(tracks))
+
+
+def add_task(query):
+    task = query.replace("new task", "").strip()
+    if task:
+        speak(f"Adding task: {task}")
+        with open(TODO_FILE, "a") as f:
+            f.write(task + "\n")
+
+
+def read_tasks():
+    if not os.path.exists(TODO_FILE):
+        return ""
+    with open(TODO_FILE) as f:
+        return f.read().strip()
+
+
+def handle_email():
+    if not EMAIL_DEFAULT_RECIPIENT:
+        speak("No default recipient is set in the environment file.")
+        return
+    try:
+        speak("What should I say?")
+        content = take_command()
+        if content:
+            send_email(EMAIL_DEFAULT_RECIPIENT, content)
+            speak("Email has been sent!")
+    except Exception as e:
+        print(f"Email error: {e}")
+        speak("Sorry, I couldn't send the email.")
+
+
+def handle_whatsapp():
+    if not WHATSAPP_NUMBER:
+        speak("No WhatsApp number is set in the environment file.")
+        return
+    speak("What should I say?")
+    message = take_command()
+    if message:
+        pwk.sendwhatmsg_instantly(WHATSAPP_NUMBER, message)
+        speak("Message sent")
+
+
+def open_app(query):
+    name = query.replace("jarvis", "").replace("open", "").strip()
+    if not name:
+        return
+    pyautogui.press("super")  # Windows start menu search
+    pyautogui.typewrite(name)
+    pyautogui.sleep(2)
+    pyautogui.press("enter")
+
+
+def process(query):
+    """Route a command. Returns False when the user wants to quit."""
+    if EXIT_PATTERN.search(query):
+        speak("Thank you Sir, please let me know if you need anything")
+        return False
+
+    if "who are you" in query:
+        speak("I am a Virtual Assistant created by Aryan")
+    elif "search wikipedia" in query:
+        search_wikipedia(query)
+    elif "open youtube" in query:
+        webbrowser.open("https://youtube.com")
+    elif "open google" in query:
+        webbrowser.open("https://google.com")
+    elif "open stackoverflow" in query:
+        webbrowser.open("https://stackoverflow.com")
+    elif "open" in query:
+        open_app(query)
+    elif "search google" in query:
+        term = query.replace("jarvis", "").replace("search google", "").strip()
+        webbrowser.open("https://www.google.com/search?q=" + term)
+    elif "play music" in query:
+        play_music()
+    elif "stop music" in query:
+        pyautogui.press("playpause")
+    elif "the time" in query:
+        speak(f"Sir, the time is {datetime.datetime.now().strftime('%H:%M:%S')}")
+    elif "send email" in query:
+        handle_email()
+    elif "send whatsapp" in query:
+        handle_whatsapp()
+    elif "new task" in query:
+        add_task(query)
+    elif "speak task" in query:
+        tasks = read_tasks()
+        speak("Work we have to do today is: " + tasks if tasks else "You have no tasks.")
+    elif "show work" in query:
+        tasks = read_tasks()
+        notification.notify(title="Today's work", message=tasks or "No tasks yet.")
+    elif "joke" in query:
+        speak(pyjokes.get_joke(language="en", category="neutral"))
+    elif query.strip():
+        speak(ask_groq(query))  # anything else goes to the LLM
+    return True
+
+
 if __name__ == "__main__":
-    wishMe()
-    while True:
-        query = takeCommand().lower()
-
-        if "who are you" in query:
-            speak("I am a Virtual Assistant created by Aaryan ")
-
-        elif 'search wikipedia' in query:
-            speak('Searching Wikipedia...')
-            query = query.replace("search wikipedia", "")
-            results = wikipedia.summary(query, sentences=2)
-            speak("According to Wikipedia")
-            print(results)
-            speak(results)
-
-        elif 'open youtube' in query:
-             webbrowser.open("youtube.com")
-
-        elif 'open google' in query:
-             webbrowser.open("google.com")
-
-        elif 'open stackoverflow' in query:
-            webbrowser.open("stackoverflow.com")
-
-        elif "open" in query:
-            query = query.replace("jarvis ", "")
-            query = query.replace("open", "")
-            pyautogui.press("super")
-            pyautogui.typewrite(query)
-            pyautogui.sleep(2)
-            pyautogui.press("enter")
-
-        elif "search google" in query:
-            query = query.replace("jarvis ", "")
-            query = query.replace("search google ", "")
-            webbrowser.open("https://www.google.com/search?q=" + query)
-
-        elif 'play music' in query:
-            speak("Playing music")
-            song = random.randint(1, 3)
-            if song == 1:
-                webbrowser.open("https://www.youtube.com/watch?v=yJg-Y5byMMw&pp=ygUUY29weXJpZ2h0IGZyZWUgbXVzaWM%3D")
-            elif song == 2:
-                webbrowser.open("https://www.youtube.com/watch?v=TW9d8vYrVFQ&pp=ygUUY29weXJpZ2h0IGZyZWUgbXVzaWM%3D")
-            elif song == 3:
-                webbrowser.open("https://www.youtube.com/watch?v=U6cPjurCOmQ&pp=ygUUY29weXJpZ2h0IGZyZWUgbXVzaWM%3D")
-
-        elif 'stop music' in query:
-            pyautogui.click()
-
-        elif 'the time' in query:
-            strTime = datetime.datetime.now().strftime("%H:%M:%S")
-            speak(f"Sir, the time is {strTime}")
-
-        elif 'send email' in query:
-            try:
-                speak("What should I say?")
-                content = takeCommand()
-                to = "xyz@gmail.com"
-                sendEmail(to, content)
-                speak("Email has been sent!")
-
-            except Exception as e:
-                print(e)
-                speak("")
-
-        elif "send whatsapp" in query:
-            pwk.sendwhatmsg_instantly("+91xxxxxxxxxx","hi, how are you")
-            speak('message sent')
-
-        elif "new task" in query:
-            task = query.replace("new task", "")
-            task = task.strip()
-            if task != "":
-                speak("Adding task : "+ task)
-                with open ("todo.txt", "a") as file:
-                    file.write(task + "\n")
-
-        elif "speak task" in query:
-            with open("todo.txt", "r") as file:
-                speak("Work we have to do today is : " + file.read())
-
-        elif "show work" in query:
-            with open("todo.txt", "r") as file:
-                tasks = file.read()
-            notification.notify(
-                title="Today's work",
-                message=tasks
-            )
-
-        elif "joke" in query:
-            content = pyjokes.get_joke(language="en", category="neutral")
-            speak (content)
-
-        elif 'rest' or 'bye' or 'go away' in query:
-            speak("Thankyou Sir, please let me know if you need anything")
-            break
-
-        else:
-            if query.strip() != "":
-                answer = ask_groq(query)
-                print(answer)
-                speak(answer)
+    wish_me()
+    while process(take_command()):
+        pass
